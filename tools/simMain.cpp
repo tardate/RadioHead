@@ -1,7 +1,10 @@
 // main.cpp
 // Lets Arduino RadioHead sketches run within a simulator on Linux as a single process
 // Copyright (C) 2014 Mike McCauley
-// $Id: simMain.cpp,v 1.2 2014/05/09 05:30:03 mikem Exp mikem $
+// $Id: simMain.cpp,v 1.3 2020/08/05 04:32:19 mikem Exp mikem $
+
+#include <RadioHead.h>
+#if (RH_PLATFORM == RH_PLATFORM_UNIX) 
 
 #include <stdio.h>
 #include <RHutil/simulator.h>
@@ -64,3 +67,5 @@ long random(long to)
 {
     return random(0, to);
 }
+
+#endif

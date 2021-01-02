@@ -1,7 +1,7 @@
 // RH_ASK.h
 //
 // Copyright (C) 2014 Mike McCauley
-// $Id: RH_ASK.h,v 1.11 2015/03/09 06:04:26 mikem Exp $
+// $Id: RH_ASK.h,v 1.22 2020/05/06 22:26:45 mikem Exp $
 
 #ifndef RH_ASK_h
 #define RH_ASK_h
@@ -93,10 +93,11 @@
 /// \par Theory of operation
 ///
 /// See ASH Transceiver Software Designer's Guide of 2002.08.07
-///   http://www.rfm.com/products/apnotes/tr_swg05.pdf
+///   http://wireless.murata.com/media/products/apnotes/tr_swg05.pdf?ref=rfm.com
 ///
 /// http://web.engr.oregonstate.edu/~moon/research/files/cas2_mar_07_dpll.pdf while not directly relevant 
 /// is also interesting.
+///
 /// \par Implementation Details
 ///
 /// Messages of up to RH_ASK_MAX_PAYLOAD_LEN (67) bytes can be sent
@@ -122,8 +123,6 @@
 /// The code consists of an ISR interrupt handler. Most of the work is done in the interrupt
 /// handler for both transmit and receive, but some is done from the user level. Expensive
 /// functions like CRC computations are always done in the user level.
-/// Caution: VirtualWire takes over Arduino Timer1, and this will affect the PWM capabilities of the 
-/// digital pins 9 and 10.
 ///
 /// \par Supported Hardware
 ///
@@ -133,7 +132,7 @@
 /// other modules may also work with this software. 
 ///
 /// Runs on a wide range of Arduino processors using Arduino IDE 1.0 or later.
-/// Also runs on on Energia
+/// Also runs on on Energia, 
 /// with MSP430G2553 / G2452 and Arduino with ATMega328 (courtesy Yannick DEVOS - XV4Y), 
 /// but untested by us. It also runs on Teensy 3.0 (courtesy of Paul
 /// Stoffregen), but untested by us. Also compiles and runs on ATtiny85 in
@@ -143,20 +142,22 @@
 /// without relying on the Arduino framework, by properly configuring the
 /// library editing the RH_ASK.h header file for describing the access
 /// to IO pins and for setting up the timer.
+/// Runs on ChipKIT Core supported processors such as Uno32 etc.
 ///
 /// - Receivers
 ///  - RX-B1 (433.92MHz) (also known as ST-RX04-ASK)
 ///  - RFM83C from HopeRF http://www.hoperfusa.com/details.jsp?pid=126
+///  - SYN480R and other similar ASK receivers
 /// - Transmitters: 
 ///  - TX-C1 (433.92MHz)
 ///  - RFM85 from HopeRF http://www.hoperfusa.com/details.jsp?pid=127
+///  - SYN115, F115 and other similar ASK transmitters
 /// - Transceivers
 ///  - DR3100 (433.92MHz)
 ///
 /// \par Connecting to Arduino
 ///
 /// Most transmitters can be connected to Arduino like this:
-
 /// \code
 /// Arduino                         Transmitter
 ///  GND------------------------------GND
@@ -190,12 +191,31 @@
 /// If you run the chip at 1MHz, you will get RK_ASK speeds 1/8th of the expected.
 ///
 /// Initialise RH_ASK for ATTiny85 like this:
+/// \code
 /// // #include <SPI.h> // comment this out, not needed
 /// RH_ASK driver(2000, 4, 3); // 200bps, TX on D3 (pin 2), RX on D4 (pin 3)
+/// \endcode
 /// then:
 /// Connect D3 (pin 2) as the output to the transmitter
 /// Connect D4 (pin 3) as the input from the receiver.
-/// 
+///
+/// With AtTiny x17 (such as 3217 etc) using Spencer Kondes megaTinyCore, You can initialise like this:
+/// RH_ASK driver(2000, 6, 7);
+/// which will transmit on digital pin 7 == PB4 == physical pin 12 on Attiny x17
+/// and receive on  digital pin 6 == PB5 == physical pin 11 on Attiny x17
+/// Uses Timer B1.
+///
+/// With AtTiny x16 (such as 3216 etc) using Spencer Kondes megaTinyCore, You can initialise like this:
+/// RH_ASK driver(2000, 11, 12);
+/// which will transmit on digital pin 12 == PC2 == physical pin 14 on Attiny x16
+/// and receive on  digital pin 11 == PC1 == physical pin 13 on Attiny x16
+/// Uses Timer B1.
+///
+/// With AtTiny x14 (such as 1614 etc) using Spencer Kondes megaTinyCore, You can initialise like this:
+/// RH_ASK driver(2000, 6, 7);
+/// which will transmit on digital pin 7 == PB0 == physical pin 9 on Attiny x14
+/// and receive on  digital pin 6 == PB1 == physical pin 8 on Attiny x16
+/// Uses Timer B1.
 ///
 /// For testing purposes you can connect 2 Arduino RH_ASK instances directly, by
 /// connecting pin 12 of one to 11 of the other and vice versa, like this for a duplex connection:
@@ -213,16 +233,38 @@
 ///
 /// Measured power output from RFM85 at 5V was 18dBm.
 ///
+/// \par ESP8266
+/// This module has been tested with the ESP8266 using an ESP-12 on a breakout board 
+/// ESP-12E SMD Adaptor Board with Power Regulator from tronixlabs 
+/// http://tronixlabs.com.au/wireless/esp8266/esp8266-esp-12e-smd-adaptor-board-with-power-regulator-australia/
+/// compiled on Arduino 1.6.5 and the ESP8266 support 2.0 installed with Board Manager.
+/// CAUTION: do not use pin 11 for IO with this chip: it will cause the sketch to hang. Instead
+/// use constructor arguments to configure different pins, eg:
+/// \code
+/// RH_ASK driver(2000, 2, 4, 5);
+/// \endcode
+/// Which will initialise the driver at 2000 bps, recieve on GPIO2, transmit on GPIO4, PTT on GPIO5.
+/// Caution: on the tronixlabs breakout board, pins 4 and 5 may be labelled vice-versa.
+///
 /// \par Timers
 /// The RH_ASK driver uses a timer-driven interrupt to generate 8 interrupts per bit period. RH_ASK
 /// takes over a timer on Arduino-like platforms. By default it takes over Timer 1. You can force it
 /// to use Timer 2 instead by enabling the define RH_ASK_ARDUINO_USE_TIMER2 near the top of RH_ASK.cpp
+/// On Arduino Zero it takes over timer TC3. On Arduino Due it takes over timer
+/// TC0. On ESP8266, takes over timer0 (which conflicts with ServoTimer0).
 ///
 /// Caution: ATTiny85 has only 2 timers, one (timer 0) usually used for
 /// millis() and one (timer 1) for PWM analog outputs. The RH_ASK Driver
 /// library, when built for ATTiny85, takes over timer 0, which prevents use
 /// of millis() etc but does permit analog outputs. This will affect the accuracy of millis() and time
 /// measurement.
+///
+/// \par  STM32 F4 Discovery with Arduino and Arduino_STM32
+/// You can initialise the driver like this:
+/// \code
+/// RH_ASK driver(2000, PA3, PA4);
+/// \endcode
+/// and connect the serial to pins PA3 and PA4
 class RH_ASK : public RHGenericDriver
 {
 public:
@@ -257,7 +299,7 @@ public:
     /// \param[in] buf Location to copy the received message
     /// \param[in,out] len Pointer to available space in buf. Set to the actual number of octets copied.
     /// \return true if a valid message was copied to buf
-    virtual bool    recv(uint8_t* buf, uint8_t* len);
+    RH_INTERRUPT_ATTR virtual bool    recv(uint8_t* buf, uint8_t* len);
 
     /// Waits until any previous transmit packet is finished being transmitted with waitPacketSent().
     /// Then loads a message into the transmitter and starts the transmitter. Note that a message length
@@ -274,18 +316,27 @@ public:
 
     /// If current mode is Rx or Tx changes it to Idle. If the transmitter or receiver is running, 
     /// disables them.
-    void           setModeIdle();
+    RH_INTERRUPT_ATTR void           setModeIdle();
 
     /// If current mode is Tx or Idle, changes it to Rx. 
     /// Starts the receiver in the RF69.
-    void           setModeRx();
+    RH_INTERRUPT_ATTR void           setModeRx();
 
     /// If current mode is Rx or Idle, changes it to Rx. F
     /// Starts the transmitter in the RF69.
     void           setModeTx();
 
     /// dont call this it used by the interrupt handler
-    void            handleTimerInterrupt();
+    RH_INTERRUPT_ATTR void            handleTimerInterrupt();
+
+    /// Returns the current speed in bits per second
+    /// \return The current speed in bits per second
+    uint16_t        speed() { return _speed;}
+
+#if (RH_PLATFORM == RH_PLATFORM_ESP8266)
+    /// ESP8266 timer0 increment value
+    uint32_t _timerIncrement;
+#endif
 
 protected:
     /// Helper function for calculating timer ticks
@@ -295,7 +346,7 @@ protected:
     void            timerSetup();
 
     /// Read the rxPin in a platform dependent way, taking into account whether it is inverted or not
-    bool            readRx();
+    RH_INTERRUPT_ATTR bool            readRx();
 
     /// Write the txPin in a platform dependent way
     void            writeTx(bool value);
@@ -304,7 +355,7 @@ protected:
     void            writePtt(bool value);
 
     /// Translates a 6 bit symbol to its 4 bit plaintext equivalent
-    uint8_t         symbol_6to4(uint8_t symbol);
+    RH_INTERRUPT_ATTR uint8_t         symbol_6to4(uint8_t symbol);
 
     /// The receiver handler function, called a 8 times the bit rate
     void            receiveTimer();

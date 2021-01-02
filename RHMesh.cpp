@@ -9,7 +9,7 @@
 //
 // Author: Mike McCauley (mikem@airspayce.com)
 // Copyright (C) 2011 Mike McCauley
-// $Id: RHMesh.cpp,v 1.7 2014/08/10 20:55:17 mikem Exp $
+// $Id: RHMesh.cpp,v 1.12 2020/08/04 09:02:14 mikem Exp $
 
 #include <RHMesh.h>
 
@@ -65,17 +65,21 @@ bool RHMesh::doArp(uint8_t address)
     uint8_t messageLen = sizeof(_tmpMessage);
     // FIXME: timeout should be configurable
     unsigned long starttime = millis();
-    while ((millis() - starttime) < 4000)
+    int32_t timeLeft;
+    while ((timeLeft = RH_MESH_ARP_TIMEOUT - (millis() - starttime)) > 0)
     {
-	if (RHRouter::recvfromAck(_tmpMessage, &messageLen))
+	if (waitAvailableTimeout(timeLeft))
 	{
-	    if (   messageLen > 1
-		&& p->header.msgType == RH_MESH_MESSAGE_TYPE_ROUTE_DISCOVERY_RESPONSE)
+	    if (RHRouter::recvfromAck(_tmpMessage, &messageLen))
 	    {
-		// Got a reply, now add the next hop to the dest to the routing table
-		// The first hop taken is the first octet
-		addRouteTo(address, headerFrom());
-		return true;
+		if (   messageLen > 1
+		       && p->header.msgType == RH_MESH_MESSAGE_TYPE_ROUTE_DISCOVERY_RESPONSE)
+		{
+		    // Got a reply, now add the next hop to the dest to the routing table
+		    // The first hop taken is the first octet
+		    addRouteTo(address, headerFrom());
+		    return true;
+		}
 	    }
 	}
 	YIELD;
@@ -103,8 +107,8 @@ void RHMesh::peekAtMessage(RoutedMessage* message, uint8_t messageLen)
 	    if (d->route[i] == _thisAddress)
 		break;
 	i++;
-	while (i++ < numRoutes)
-	    addRouteTo(d->route[i], headerFrom());
+	while (i < numRoutes)
+	    addRouteTo(d->route[i++], headerFrom());
     }
     else if (   messageLen > 1 
 	     && m->msgType == RH_MESH_MESSAGE_TYPE_ROUTE_FAILURE)
@@ -148,14 +152,15 @@ bool RHMesh::isPhysicalAddress(uint8_t* address, uint8_t addresslen)
 }
 
 ////////////////////////////////////////////////////////////////////
-bool RHMesh::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* source, uint8_t* dest, uint8_t* id, uint8_t* flags)
+bool RHMesh::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* source, uint8_t* dest, uint8_t* id, uint8_t* flags, uint8_t* hops)
 {     
     uint8_t tmpMessageLen = sizeof(_tmpMessage);
     uint8_t _source;
     uint8_t _dest;
     uint8_t _id;
     uint8_t _flags;
-    if (RHRouter::recvfromAck(_tmpMessage, &tmpMessageLen, &_source, &_dest, &_id, &_flags))
+    uint8_t _hops;
+    if (RHRouter::recvfromAck(_tmpMessage, &tmpMessageLen, &_source, &_dest, &_id, &_flags, &_hops))
     {
 	MeshMessageHeader* p = (MeshMessageHeader*)&_tmpMessage;
 
@@ -168,6 +173,7 @@ bool RHMesh::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* source, uint8_t* d
 	    if (dest)   *dest   = _dest;
 	    if (id)     *id     = _id;
 	    if (flags)  *flags  = _flags;
+	    if (hops)   *hops   = _hops;
 	    uint8_t msgLen = tmpMessageLen - sizeof(MeshMessageHeader);
 	    if (*len > msgLen)
 		*len = msgLen;
@@ -193,19 +199,26 @@ bool RHMesh::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* source, uint8_t* d
 		if (d->route[i] == _thisAddress)
 		    return false; // Already been through us. Discard
 	    
+	        
+            addRouteTo(_source, headerFrom()); // The originator needs to be added regardless of node type
+
 	    // Hasnt been past us yet, record routes back to the earlier nodes
-	    addRouteTo(_source, headerFrom()); // The originator
-	    for (i = 0; i < numRoutes; i++)
-		addRouteTo(d->route[i], headerFrom());
+            // No need to waste memory if we are not participating in routing
+            if (_isa_router)
+            {
+	        for (i = 0; i < numRoutes; i++)
+		    addRouteTo(d->route[i], headerFrom());
+            }
+
 	    if (isPhysicalAddress(&d->dest, d->destlen))
 	    {
 		// This route discovery is for us. Unicast the whole route back to the originator
 		// as a RH_MESH_MESSAGE_TYPE_ROUTE_DISCOVERY_RESPONSE
-		// We are certain to have a route there, becuase we just got it
+		// We are certain to have a route there, because we just got it
 		d->header.msgType = RH_MESH_MESSAGE_TYPE_ROUTE_DISCOVERY_RESPONSE;
 		RHRouter::sendtoWait((uint8_t*)d, tmpMessageLen, _source);
 	    }
-	    else if (i < _max_hops)
+	    else if ((i < _max_hops) && _isa_router)
 	    {
 		// Its for someone else, rebroadcast it, after adding ourselves to the list
 		d->route[numRoutes] = _thisAddress;
@@ -220,14 +233,18 @@ bool RHMesh::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* source, uint8_t* d
 }
 
 ////////////////////////////////////////////////////////////////////
-bool RHMesh::recvfromAckTimeout(uint8_t* buf, uint8_t* len, uint16_t timeout, uint8_t* from, uint8_t* to, uint8_t* id, uint8_t* flags)
+bool RHMesh::recvfromAckTimeout(uint8_t* buf, uint8_t* len, uint16_t timeout, uint8_t* from, uint8_t* to, uint8_t* id, uint8_t* flags, uint8_t* hops)
 {  
     unsigned long starttime = millis();
-    while ((millis() - starttime) < timeout)
+    int32_t timeLeft;
+    while ((timeLeft = timeout - (millis() - starttime)) > 0)
     {
-	if (recvfromAck(buf, len, from, to, id, flags))
-	    return true;
-	YIELD;
+	if (waitAvailableTimeout(timeLeft))
+	{
+	    if (recvfromAck(buf, len, from, to, id, flags, hops))
+		return true;
+	    YIELD;
+	}
     }
     return false;
 }

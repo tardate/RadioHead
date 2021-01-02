@@ -1,17 +1,30 @@
 // RH_Serial.cpp
 //
 // Copyright (C) 2014 Mike McCauley
-// $Id: RH_Serial.cpp,v 1.10 2014/06/24 02:40:12 mikem Exp $
+// $Id: RH_Serial.cpp,v 1.17 2020/01/07 23:35:02 mikem Exp $
 
 #include <RH_Serial.h>
-#include <HardwareSerial.h>
+#if (RH_PLATFORM == RH_PLATFORM_STM32F2)
+#elif defined (ARDUINO_ARCH_STM32F4)
+ #include <libmaple/HardwareSerial.h>
+#elif (RH_PLATFORM == RH_PLATFORM_ATTINY_MEGA)
+ #include <UART.h>
+#else
+ #include <HardwareSerial.h>
+#endif
 #include <RHCRC.h>
 
+#ifdef RH_HAVE_SERIAL
 RH_Serial::RH_Serial(HardwareSerial& serial)
     :
     _serial(serial),
     _rxState(RxStateInitialising)
 {
+}
+
+HardwareSerial& RH_Serial::serial()
+{
+    return _serial;
 }
 
 bool RH_Serial::init()
@@ -28,6 +41,35 @@ bool RH_Serial::available()
     while (!_rxBufValid &&_serial.available())
 	handleRx(_serial.read());
     return _rxBufValid;
+}
+
+void RH_Serial::waitAvailable()
+{
+#if (RH_PLATFORM == RH_PLATFORM_UNIX)
+    // Unix version driver in RHutil/HardwareSerial knows how to wait without polling
+    while (!available())
+	_serial.waitAvailable();
+#else
+    RHGenericDriver::waitAvailable();
+#endif
+}
+
+bool RH_Serial::waitAvailableTimeout(uint16_t timeout)
+{
+#if (RH_PLATFORM == RH_PLATFORM_UNIX)
+    // Unix version driver in RHutil/HardwareSerial knows how to wait without polling
+    unsigned long starttime = millis();
+    while ((millis() - starttime) < timeout)
+    {
+	_serial.waitAvailableTimeout(timeout - (millis() - starttime));
+        if (available())
+           return true;
+	YIELD;
+    }
+    return false;
+#else
+    return RHGenericDriver::waitAvailableTimeout(timeout);
+#endif
 }
 
 void  RH_Serial::handleRx(uint8_t ch)
@@ -129,6 +171,7 @@ void RH_Serial::validateRxBuf()
 	_rxBad++;
 	return;
     }
+
     // Extract the 4 headers
     _rxHeaderTo    = _rxBuf[0];
     _rxHeaderFrom  = _rxBuf[1];
@@ -147,7 +190,6 @@ bool RH_Serial::recv(uint8_t* buf, uint8_t* len)
 {
     if (!available())
 	return false;
-
     if (buf && len)
     {
 	// Skip the 4 headers that are at the beginning of the rxBuf
@@ -162,6 +204,12 @@ bool RH_Serial::recv(uint8_t* buf, uint8_t* len)
 // Caution: this may block
 bool RH_Serial::send(const uint8_t* data, uint8_t len)
 {
+    if (len > RH_SERIAL_MAX_MESSAGE_LEN)
+	return false;
+
+    if (!waitCAD()) 
+	return false;  // Check channel activity
+
     _txFcs = 0xffff;    // Initial value
     _serial.write(DLE); // Not in FCS
     _serial.write(STX); // Not in FCS
@@ -197,3 +245,5 @@ uint8_t RH_Serial::maxMessageLength()
 {
     return RH_SERIAL_MAX_MESSAGE_LEN;
 }
+
+#endif // HAVE_SERIAL

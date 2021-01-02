@@ -9,7 +9,7 @@
 //
 // Author: Mike McCauley (mikem@airspayce.com)
 // Copyright (C) 2011 Mike McCauley
-// $Id: RHReliableDatagram.cpp,v 1.12 2015/01/02 21:38:24 mikem Exp $
+// $Id: RHReliableDatagram.cpp,v 1.18 2018/11/08 02:31:43 mikem Exp $
 
 #include <RHReliableDatagram.h>
 
@@ -22,6 +22,7 @@ RHReliableDatagram::RHReliableDatagram(RHGenericDriver& driver, uint8_t thisAddr
     _lastSequenceNumber = 0;
     _timeout = RH_DEFAULT_TIMEOUT;
     _retries = RH_DEFAULT_RETRIES;
+    memset(_seenIds, 0, sizeof(_seenIds));
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -52,7 +53,22 @@ bool RHReliableDatagram::sendtoWait(uint8_t* buf, uint8_t len, uint8_t address)
     while (retries++ <= _retries)
     {
 	setHeaderId(thisSequenceNumber);
-	setHeaderFlags(RH_FLAGS_NONE, RH_FLAGS_ACK); // Clear the ACK flag
+
+        // Set and clear header flags depending on if this is an
+        // initial send or a retry.
+        uint8_t headerFlagsToSet = RH_FLAGS_NONE;
+        // Always clear the ACK flag
+        uint8_t headerFlagsToClear = RH_FLAGS_ACK;
+        if (retries == 1) {
+            // On an initial send, clear the RETRY flag in case
+            // it was previously set
+            headerFlagsToClear |= RH_FLAGS_RETRY;
+        } else {
+            // Not an initial send, set the RETRY flag
+            headerFlagsToSet = RH_FLAGS_RETRY;
+        }
+        setHeaderFlags(headerFlagsToSet, headerFlagsToClear);
+
 	sendto(buf, len, address);
 	waitPacketSent();
 
@@ -67,10 +83,15 @@ bool RHReliableDatagram::sendtoWait(uint8_t* buf, uint8_t len, uint8_t address)
 	// Compute a new timeout, random between _timeout and _timeout*2
 	// This is to prevent collisions on every retransmit
 	// if 2 nodes try to transmit at the same time
+#if (RH_PLATFORM == RH_PLATFORM_RASPI) // use standard library random(), bugs in random(min, max)
+	uint16_t timeout = _timeout + (_timeout * (random() & 0xFF) / 256);
+#else
 	uint16_t timeout = _timeout + (_timeout * random(0, 256) / 256);
-        while ((millis() - thisSendTime) < timeout)
+#endif
+	int32_t timeLeft;
+        while ((timeLeft = timeout - (millis() - thisSendTime)) > 0)
 	{
-	    if (available())
+	    if (waitAvailableTimeout(timeLeft))
 	    {
 		uint8_t from, to, id, flags;
 		if (recvfrom(0, 0, &from, &to, &id, &flags)) // Discards the message
@@ -110,21 +131,27 @@ bool RHReliableDatagram::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* from, 
     uint8_t _to;
     uint8_t _id;
     uint8_t _flags;
-    // Get the message before its clobbered by the ACK (shared rx and tx buffer in RH
+    // Get the message before its clobbered by the ACK (shared rx and tx buffer in some drivers
     if (available() && recvfrom(buf, len, &_from, &_to, &_id, &_flags))
     {
 	// Never ACK an ACK
 	if (!(_flags & RH_FLAGS_ACK))
 	{
-	    // Its a normal message for this node, not an ACK
-	    if (_to != RH_BROADCAST_ADDRESS)
+	    // Its a normal message not an ACK
+	    if (_to ==_thisAddress)
 	    {
+	        // Its for this node and
 		// Its not a broadcast, so ACK it
 		// Acknowledge message with ACK set in flags and ID set to received ID
 		acknowledge(_id, _from);
 	    }
-	    // If we have not seen this message before, then we are interested in it
-	    if (_id != _seenIds[_from])
+            // Filter out retried messages that we have seen before. This explicitly
+            // only filters out messages that are marked as retries to protect against
+            // the scenario where a transmitting device sends just one message and
+            // shuts down between transmissions. Devices that do this will report the
+            // the same ID each time since their internal sequence number will reset
+            // to zero each time the device starts up.
+	    if ((RH_ENABLE_EXPLICIT_RETRY_DEDUP && !(_flags & RH_FLAGS_RETRY)) || _id != _seenIds[_from])
 	    {
 		if (from)  *from =  _from;
 		if (to)    *to =    _to;
@@ -143,10 +170,14 @@ bool RHReliableDatagram::recvfromAck(uint8_t* buf, uint8_t* len, uint8_t* from, 
 bool RHReliableDatagram::recvfromAckTimeout(uint8_t* buf, uint8_t* len, uint16_t timeout, uint8_t* from, uint8_t* to, uint8_t* id, uint8_t* flags)
 {
     unsigned long starttime = millis();
-    while ((millis() - starttime) < timeout)
+    int32_t timeLeft;
+    while ((timeLeft = timeout - (millis() - starttime)) > 0)
     {
-	if (recvfromAck(buf, len, from, to, id, flags))
-	    return true;
+	if (waitAvailableTimeout(timeLeft))
+	{
+	    if (recvfromAck(buf, len, from, to, id, flags))
+		return true;
+	}
 	YIELD;
     }
     return false;
